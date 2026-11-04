@@ -1,5 +1,8 @@
 from flask import Flask, request, jsonify, render_template_string
 import requests
+from bs4 import BeautifulSoup
+import re
+import urllib.parse
 
 app = Flask(__name__)
 
@@ -7,10 +10,10 @@ HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Instant Maps Lead Scraper</title>
+    <title>Live Maps & Web Lead Scraper</title>
     <style>
-        body { font-family: sans-serif; background: #0f172a; color: #f8fafc; padding: 30px; }
-        .box { max-width: 900px; margin: auto; background: #1e293b; padding: 25px; border-radius: 8px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 30px; }
+        .box { max-width: 1000px; margin: auto; background: #1e293b; padding: 25px; border-radius: 8px; }
         h2 { color: #38bdf8; margin-top: 0; }
         .input-row { display: flex; gap: 10px; margin: 20px 0; }
         input { flex: 1; padding: 12px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 15px; }
@@ -25,20 +28,19 @@ HTML_PAGE = """
 </head>
 <body>
 <div class="box">
-    <h2>Instant Maps Lead Scraper</h2>
-    <p style="color: #94a3b8;">Location aur business type dalein (e.g. <i>dentists in Dallas</i>)</p>
+    <h2>Live Maps & Business Lead Scraper</h2>
+    <p style="color: #94a3b8;">Format: <code>Keyword in City</code> (e.g. <b>Gyms in Ohio</b> ya <b>Roofing in Dallas</b>)</p>
     <div class="input-row">
-        <input type="text" id="query" placeholder="Enter keyword and city...">
+        <input type="text" id="query" placeholder="e.g. Gyms in Ohio">
         <button id="btn" onclick="startScrape()">Extract Leads</button>
     </div>
-    <div id="status">Scraping live places data... Kripya intezar karein.</div>
+    <div id="status">Scraping live data... Kripya intezar karein.</div>
     <table id="resultsTable" style="display:none;">
         <thead>
             <tr>
                 <th>Business Name</th>
-                <th>Phone</th>
                 <th>Website</th>
-                <th>Full Address</th>
+                <th>Snippet / Details</th>
             </tr>
         </thead>
         <tbody id="tableBody"></tbody>
@@ -73,13 +75,12 @@ async function startScrape() {
                 const site = lead.website !== 'N/A' ? `<a href="${lead.website}" target="_blank">${lead.website}</a>` : 'N/A';
                 tbody.innerHTML += `<tr>
                     <td><b>${lead.name}</b></td>
-                    <td>${lead.phone}</td>
                     <td>${site}</td>
-                    <td>${lead.address}</td>
+                    <td>${lead.snippet}</td>
                 </tr>`;
             });
         } else {
-            alert('Koi leads nahi mili. Doosra keyword try karein.');
+            alert('Data fetch nahi hua. Format simple rakhein jaise: Gyms in Ohio');
         }
     } catch (err) {
         status.style.display = 'none';
@@ -102,25 +103,49 @@ def scrape():
     if not query:
         return jsonify({"status": "error", "message": "Query missing"}), 400
 
-    url = f"https://nominatim.openstreetmap.org/search?format=json&q={query}&addressdetails=1&extratags=1&limit=20"
-    headers = {"User-Agent": "LeadPipelineScraper/1.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    # Live Search Engine Request
+    search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
     
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        items = r.json()
+        r = requests.post(search_url, headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
         leads = []
-        for item in items:
-            name = item.get('display_name', '').split(',')[0]
-            extratags = item.get('extratags', {})
-            website = extratags.get('website', extratags.get('contact:website', 'N/A'))
-            phone = extratags.get('phone', extratags.get('contact:phone', 'N/A'))
+        for result in soup.find_all('div', class_='result'):
+            title_tag = result.find('a', class_='result__a')
+            snippet_tag = result.find('a', class_='result__snippet')
             
+            if not title_tag:
+                continue
+                
+            raw_url = title_tag.get('href', '')
+            actual_url = raw_url
+            if "uddg=" in raw_url:
+                try:
+                    actual_url = urllib.parse.unquote(raw_url.split("uddg=")[1].split("&")[0])
+                except:
+                    actual_url = raw_url
+
+            # Social media / Wikipedia filter
+            if any(x in actual_url for x in ['wikipedia.org', 'youtube.com', 'facebook.com', 'instagram.com']):
+                continue
+
+            name = title_tag.get_text(strip=True)
+            snippet = snippet_tag.get_text(strip=True) if snippet_tag else 'N/A'
+
             leads.append({
                 "name": name,
-                "phone": phone,
-                "website": website,
-                "address": item.get('display_name', '')
+                "website": actual_url,
+                "snippet": snippet
             })
+            
+            if len(leads) >= 15:
+                break
+
         return jsonify({"status": "success", "total": len(leads), "leads": leads})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
